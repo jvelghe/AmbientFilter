@@ -1,0 +1,674 @@
+---
+title: "AmbientFilter: Per-Cell-Type Ambient RNA Correction"
+subtitle: "Step-by-step vignette for human islet scRNA-seq datasets"
+author: "Verchere Lab"
+date: "`r Sys.Date()`"
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: kate
+    code_folding: show
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width  = 10,
+  fig.height = 6,
+  cache   = FALSE
+)
+```
+
+---
+
+# Background
+
+Single-cell RNA-seq of human pancreatic islets suffers from a well-documented
+ambient RNA problem: beta cells and alpha cells are so transcriptionally
+dominant that their transcripts — particularly **INS**, **TTR**, and **GCG** —
+contaminate the droplet soup and appear in cell types that don't actually
+express them. Macrophages, lymphocytes, ductal cells, and mast cells all show
+spurious islet hormone signal as a result.
+
+This vignette walks through `AmbientFilter`, which extends the approach of
+[dRopt](https://github.com/CUAnschutzBDC/dRopt) to correct ambient
+contamination on a **per-cell-type basis**, with cell-type-specific correction
+strengths. Crucially, macrophages receive a **conservative correction** (0.5)
+because they legitimately internalise ambient RNA via efferocytosis and
+trogocytosis — being "nibbly" is part of their biology.
+
+> **Run this upstream of any subclustering.** Correct the full annotated object
+> first, then extract your cell type of interest for subclustering.
+
+---
+
+# 1. Installation
+
+```{r install, eval=FALSE}
+# Bioconductor dependency
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install("DropletUtils")
+
+# Install AmbientFilter from GitHub
+if (!requireNamespace("devtools", quietly = TRUE))
+  install.packages("devtools")
+devtools::install_github("jvelghe/AmbientFilter")
+```
+
+---
+
+# 2. Load libraries
+
+```{r libraries}
+library(AmbientFilter)
+library(Seurat)
+library(SeuratObject)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+```
+
+---
+
+# 3. Load your Seurat object
+
+Your object should already be:
+
+- QC-filtered and preprocessed (normalised, clustered)
+- Annotated with cell type labels in a metadata column
+- Containing **raw counts** in the `RNA` assay counts layer (do not use
+  SCTransform-corrected counts as input here — use the original RNA counts)
+- Split by sample in a metadata column (one value per donor)
+- Ideally, tissue of origin in a separate metadata column if you have
+  pancreas + spleen + other tissues in one object
+
+```{r load-object, eval=FALSE}
+# Load your object
+seu <- readRDS("/path/to/your/islet_atlas.rds")
+```
+
+```{r inspect-object}
+# For this vignette, we'll assume `seu` is already loaded.
+# Inspect the key metadata columns:
+head(seu@meta.data[, c("orig.ident",   # or your sample column
+                        "tissue",        # or your tissue column
+                        "cell_type")])   # or your cell type column
+
+# Check what cell types are present
+table(seu@meta.data$cell_type)
+
+# Check what samples are present
+table(seu@meta.data$orig.ident)
+
+# Make sure raw counts are in the RNA assay
+GetAssayData(seu, assay = "RNA", layer = "counts")[1:5, 1:5]
+```
+
+---
+
+# 4. Check ambient signal before correction
+
+Before running the correction, let's visualise the ambient signal we expect to
+remove. In islet data, INS and TTR should ideally be near-zero in
+non-endocrine populations.
+
+```{r pre-correction-violin}
+# Canonical ambient genes in islet scRNA-seq
+ambient_genes <- c("INS", "TTR", "GCG", "PRSS1", "CELA3A")
+
+# Only plot genes that are present in your object
+ambient_genes_present <- ambient_genes[ambient_genes %in% rownames(seu)]
+
+# Violin plot split by cell type — look for signal in non-expressing populations
+VlnPlot(
+  seu,
+  features  = ambient_genes_present,
+  group.by  = "cell_type",
+  pt.size   = 0,
+  ncol      = length(ambient_genes_present)
+) +
+  plot_annotation(
+    title    = "Ambient gene expression BEFORE correction",
+    subtitle = "INS/TTR/GCG should be near-zero in macrophages, lymphocytes, ductal, mast cells"
+  )
+```
+
+```{r pre-correction-feature}
+# Feature plots to see spatial distribution of ambient signal
+FeaturePlot(
+  seu,
+  features = ambient_genes_present,
+  ncol     = 3,
+  order    = TRUE
+)
+```
+
+---
+
+# 5. Estimate per-sample background profiles
+
+The background profile represents the expected ambient distribution — the
+proportion of total reads mapping to each gene across all cells in a sample.
+In islet data, INS and TTR will dominate this profile.
+
+Key decisions here:
+
+- **`tissue_col`**: always specify this if you have multiple tissues. A spleen
+  background is very different from a pancreas background, and mixing them will
+  over- or under-correct.
+- **`exclude_from_background`**: if your samples are heavily enriched for islet
+  cells (e.g. CD45-depleted or islet-enriched preps), you may want to exclude
+  beta and alpha cells from the background estimate to avoid them dominating the
+  ambient profile to an unrealistic degree. For whole-pancreas dissociations,
+  leave this as `NULL`.
+
+```{r estimate-background}
+bg <- estimate_background(
+  object             = seu,
+  sample_col         = "orig.ident",   # <-- change to your sample column
+  tissue_col         = "tissue",        # <-- change to your tissue column, or NULL
+  assay              = "RNA",
+  exclude_cell_types = NULL,            # e.g. c("beta", "alpha") if enriched
+  cell_type_col      = "cell_type",
+  verbose            = TRUE
+)
+
+# Inspect: what are the top ambient genes for one sample?
+sample_id <- names(bg)[1]
+cat("\nTop 20 ambient genes for sample:", sample_id, "\n")
+head(sort(bg[[sample_id]], decreasing = TRUE), 20)
+```
+
+```{r plot-background}
+# Plot the ambient profile for each sample — INS/TTR should dominate
+# in pancreas samples
+top_ambient <- lapply(names(bg), function(s) {
+  top <- head(sort(bg[[s]], decreasing = TRUE), 15)
+  data.frame(
+    sample     = s,
+    gene       = names(top),
+    proportion = as.numeric(top),
+    stringsAsFactors = FALSE
+  )
+})
+top_ambient_df <- do.call(rbind, top_ambient)
+
+ggplot(top_ambient_df, aes(x = reorder(gene, proportion), y = proportion,
+                            fill = gene == "INS" | gene == "TTR")) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c("grey70", "#C94040")) +
+  coord_flip() +
+  facet_wrap(~sample, scales = "free_x") +
+  labs(
+    title    = "Top ambient genes per sample",
+    subtitle = "Red = INS or TTR (expected to dominate in islet preparations)",
+    x        = NULL,
+    y        = "Proportion of all reads"
+  ) +
+  theme_minimal(base_size = 10)
+```
+
+---
+
+# 6. Run the full ambient correction pipeline
+
+Now we run the main function. Define your correction strengths carefully:
+
+| Cell type | Strength | Reasoning |
+|-----------|----------|-----------|
+| `macrophage` | `0.5` | Legitimately nibbly — efferocytosis/trogocytosis |
+| `lymphocyte` | `1.0` | No biological reason to contain ambient transcripts |
+| `mast_cell` | `1.0` | No biological reason |
+| `ductal` | `1.0` | No biological reason |
+| `stellate` | `1.0` | No biological reason |
+| `endothelial` | `1.0` | No biological reason |
+| `beta`, `alpha` | skip or `0.0` | They *are* the ambient source |
+
+```{r define-parameters}
+# Define which cell types to correct
+# Exclude endocrine cells — they ARE the ambient source
+cell_types_to_correct <- c(
+  "macrophage",
+  "lymphocyte",
+  "mast_cell",
+  "ductal",
+  "stellate",
+  "endothelial",
+  "schwann"
+  # Add any other non-endocrine cell types in your atlas
+)
+
+# Per-cell-type correction strength
+# Adjust this named vector to match your cell_type labels exactly
+correction_strengths <- c(
+  macrophage  = 0.5,   # conservative — macrophages are nibbly
+  lymphocyte  = 1.0,
+  mast_cell   = 1.0,
+  ductal      = 1.0,
+  stellate    = 1.0,
+  endothelial = 1.0,
+  schwann     = 1.0
+)
+
+# Islet-specific genes to always highlight in diagnostic plots
+islet_ambient_genes <- c("INS", "TTR", "GCG", "PRSS1", "CELA3A",
+                          "CLPS", "PNLIP", "REG1A")
+```
+
+```{r run-ambient-filter}
+# Run the full hybrid pipeline:
+#   Step 1: per-sample background estimation
+#   Step 2: per-cell-type removeAmbience() correction
+#   Step 3: cross-sample consistency analysis (the pooled hybrid layer)
+#   Step 4: export shareable ambient offenders table
+results <- ambient_filter(
+  object                    = seu,
+  cell_type_col             = "cell_type",
+  sample_col                = "orig.ident",
+  tissue_col                = "tissue",          # NULL if single tissue
+  cell_types                = cell_types_to_correct,
+  correction_strength       = correction_strengths,
+  exclude_from_background   = NULL,
+  assay                     = "RNA",
+  min_cells                 = 10,
+  make_plots                = TRUE,
+  label_difference          = 0.5,
+  highlight_genes           = islet_ambient_genes,
+  # ── Hybrid method: cross-sample consistency analysis ──────────────────────
+  run_consistency_analysis  = TRUE,   # runs identify_consistent_ambient() automatically
+  min_sample_fraction       = 0.5,    # gene must be corrected in >= 50% of samples
+  min_cell_types            = 2,      # gene must be ambient in >= 2 cell types
+  # ── Shareable ambient offenders export ────────────────────────────────────
+  export_offenders          = TRUE,   # saves ambient_offenders.csv/.rds/.xlsx
+  dataset_name              = "HPAP_islet_atlas_2026",
+  tissue                    = "human_pancreatic_islet",
+  n_donors                  = 87,     # update to your actual donor count
+  platform                  = "10x_Chromium_v3",
+  return_full_corrected_obj = FALSE,  # set TRUE if you want the full updated object
+  save_dir                  = "ambient_filter_results",
+  verbose                   = TRUE
+)
+```
+
+---
+
+# 7. Review the correction summary
+
+```{r summary}
+# Overall summary across all cell types
+results$summary
+```
+
+```{r summary-plot}
+# Visualise: how many genes were significantly changed per cell type?
+ggplot(results$summary,
+       aes(x = reorder(cell_type, n_genes_changed), y = n_genes_changed,
+           fill = cell_type)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  labs(
+    title    = "Genes significantly changed by ambient correction",
+    subtitle = "|log2FC| > log2(1.5) between original and corrected",
+    x        = NULL,
+    y        = "Number of changed genes"
+  ) +
+  theme_minimal(base_size = 11)
+```
+
+---
+
+# 8. Inspect diagnostics per cell type
+
+## 8a. Macrophages (conservative correction)
+
+```{r mac-diagnostics, fig.height=5}
+# Correlation plot: original vs corrected mean expression
+# Points below the diagonal were reduced by correction
+results$plots$macrophage$correlation
+```
+
+```{r mac-top-genes, fig.height=5}
+# Bar chart of most-changed genes
+results$plots$macrophage$top_genes_bar
+```
+
+```{r mac-violin, fig.height=5}
+# Violin plots — before and after for the top changed genes
+results$plots$macrophage$violin_original  +
+  plot_annotation(title = "Macrophage — BEFORE correction")
+
+results$plots$macrophage$violin_corrected +
+  plot_annotation(title = "Macrophage — AFTER correction")
+```
+
+```{r mac-changed-genes}
+# Table of most-changed genes in macrophages
+head(results$cell_type_results$macrophage$changed_genes, 20)
+```
+
+## 8b. Lymphocytes (full correction)
+
+```{r lymph-diagnostics, fig.height=5}
+results$plots$lymphocyte$correlation
+```
+
+```{r lymph-violin, fig.height=5}
+results$plots$lymphocyte$violin_original  +
+  plot_annotation(title = "Lymphocyte — BEFORE correction")
+
+results$plots$lymphocyte$violin_corrected +
+  plot_annotation(title = "Lymphocyte — AFTER correction")
+```
+
+```{r lymph-changed-genes}
+head(results$cell_type_results$lymphocyte$changed_genes, 20)
+```
+
+## 8c. INS expression across all corrected cell types
+
+This is the key sanity check — INS should drop substantially in all
+non-endocrine populations after correction.
+
+```{r ins-comparison, fig.height=7}
+# Compare INS expression before and after correction across all cell types
+ins_before <- lapply(names(results$cell_type_results), function(ct) {
+  obj  <- results$cell_type_results[[ct]]$original
+  expr <- GetAssayData(obj, assay = "RNA", layer = "counts")["INS", ]
+  data.frame(
+    cell_type  = ct,
+    expression = as.numeric(expr),
+    state      = "Before",
+    stringsAsFactors = FALSE
+  )
+})
+
+ins_after <- lapply(names(results$cell_type_results), function(ct) {
+  obj  <- results$cell_type_results[[ct]]$corrected
+  if (!"INS" %in% rownames(obj)) return(NULL)
+  expr <- GetAssayData(obj, assay = "RNA", layer = "counts")["INS", ]
+  data.frame(
+    cell_type  = ct,
+    expression = as.numeric(expr),
+    state      = "After",
+    stringsAsFactors = FALSE
+  )
+})
+
+ins_df <- do.call(rbind, c(ins_before, ins_after))
+ins_df$state <- factor(ins_df$state, levels = c("Before", "After"))
+
+ggplot(ins_df, aes(x = state, y = log1p(expression), fill = state)) +
+  geom_violin(scale = "width", trim = TRUE, linewidth = 0.3) +
+  geom_boxplot(width = 0.1, outlier.size = 0.3, fill = "white",
+               linewidth = 0.3) +
+  scale_fill_manual(values = c("Before" = "#C94040", "After" = "#5FAD6E")) +
+  facet_wrap(~cell_type, scales = "free_y", ncol = 4) +
+  labs(
+    title    = "INS expression before and after ambient correction",
+    subtitle = "log1p(counts) — should decrease in all non-endocrine populations",
+    x        = NULL,
+    y        = "INS expression (log1p counts)"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+```
+
+---
+
+# 9. Extract corrected objects for subclustering
+
+Once you're satisfied with the correction, pull out the corrected subsets for
+downstream subclustering. These are clean Seurat objects with corrected counts
+and re-normalised data layers, ready to feed into your standard pipeline.
+
+```{r extract-for-subclustering, eval=FALSE}
+# Macrophage object — corrected, ready for subclustering
+mac_corrected <- results$cell_type_results$macrophage$corrected
+
+# Lymphocyte object
+lymph_corrected <- results$cell_type_results$lymphocyte$corrected
+
+# Mast cell object
+mast_corrected <- results$cell_type_results$mast_cell$corrected
+
+# These are standard Seurat objects — proceed with your normal pipeline
+# e.g. for macrophages:
+mac_corrected <- mac_corrected |>
+  FindVariableFeatures(nfeatures = 2000) |>
+  ScaleData() |>
+  RunPCA() |>
+  IntegrateLayers(
+    method    = SeuratWrappers::FastMNNIntegration,
+    new.reduction = "integrated.mnn",
+    orig.reduction = "pca"
+  ) |>
+  FindNeighbors(reduction = "integrated.mnn", dims = 1:30) |>
+  FindClusters(resolution = 0.3) |>
+  RunUMAP(reduction = "integrated.mnn", dims = 1:30)
+
+DimPlot(mac_corrected, group.by = "seurat_clusters", label = TRUE)
+```
+
+---
+
+# 9b. Cross-sample consistency analysis — the hybrid layer
+
+The hybrid method automatically runs after per-sample correction.
+It asks: *which genes are consistently corrected across donors* — the
+signature of true ambient contamination rather than sample-specific noise.
+
+```{r consistency-heatmap, fig.height=10, fig.width=10}
+# The ambient map is stored in results$ambient_map
+# Heatmap: genes (rows) x cell types (columns)
+# Colour = fraction of samples in which this gene was corrected
+# Dark green = consistently ambient across most donors
+results$ambient_map$plots$heatmap
+```
+
+```{r cross-celltype-offenders}
+# Genes that are ambient in >= min_cell_types cell types
+# These are your strongest ambient offenders
+results$ambient_map$cross_cell_type
+```
+
+```{r cross-celltype-bar, fig.height=6}
+# Bar chart of cross-cell-type offenders ranked by consistency
+results$ambient_map$plots$cross_cell_type_bar
+```
+
+```{r per-sample-dot, fig.height=8}
+# Dot plot: per-cell-type consistency
+# Dot size = fraction of samples corrected | colour = mean log2FC
+results$ambient_map$plots$per_sample_consistency
+```
+
+```{r recommended-features}
+# Recommended features for a second-pass correction
+# These are the consistently ambient genes per cell type
+# You can feed this directly into a second ambient_filter() run
+results$ambient_map$recommended_features
+```
+
+---
+
+# 9c. Optional: two-pass correction with force-correction of consistent offenders
+
+If some consistent ambient genes weren't fully removed in the first pass
+(e.g. in samples with very few cells), run a second pass with
+`features = recommended_features` to force-correct them.
+
+```{r two-pass, eval=FALSE}
+results_v2 <- ambient_filter(
+  object              = seu,
+  cell_type_col       = "cell_type",
+  sample_col          = "orig.ident",
+  tissue_col          = "tissue",
+  cell_types          = cell_types_to_correct,
+  correction_strength = correction_strengths,
+  features            = results$ambient_map$recommended_features, # <-- force-correct
+  run_consistency_analysis = TRUE,
+  min_sample_fraction = 0.5,
+  min_cell_types      = 2,
+  export_offenders    = TRUE,
+  dataset_name        = "HPAP_islet_atlas_2026_v2",
+  save_dir            = "ambient_filter_results_v2",
+  verbose             = TRUE
+)
+```
+
+---
+
+# 10. Ambient offenders — shareable community resource
+
+The ambient offenders table is automatically saved to
+`ambient_filter_results/ambient_offenders/` in three formats:
+
+- `ambient_offenders.csv` — plain text with metadata header, shareable with anyone
+- `ambient_offenders.rds` — R object for direct loading
+- `ambient_offenders.xlsx` — Excel with per-cell-type sheets and colour-coded
+  consistency matrix
+
+These files identify genes that are **consistently ambient across donors and
+cell types** in your specific tissue/platform combination. Sharing these with
+the field helps other labs using the same tissue clean their own data.
+
+```{r view-offenders}
+# View the ambient offenders table
+results$ambient_map$cross_cell_type
+```
+
+```{r load-offenders-rds, eval=FALSE}
+# How another lab would load and use your offenders file:
+offenders <- readRDS("ambient_filter_results/ambient_offenders/ambient_offenders.rds")
+
+# Their top ambient genes
+offenders$offenders$gene
+
+# Use as features in their own correction run
+their_results <- ambient_filter(
+  their_object,
+  features = list(
+    macrophage = offenders$offenders$gene,
+    lymphocyte = offenders$offenders$gene
+  ),
+  ...
+)
+```
+
+```{r export-offenders-manual, eval=FALSE}
+# Or export manually with custom metadata:
+export_ambient_offenders(
+  ambient_map  = results$ambient_map,
+  dataset_name = "HPAP_islet_atlas_2026",
+  tissue       = "human_pancreatic_islet",
+  n_donors     = 87,
+  platform     = "10x_Chromium_v3",
+  notes        = "CD45-enriched + whole pancreas; SS2026 JDRF2 atlas",
+  save_dir     = "ambient_filter_results/ambient_offenders"
+)
+```
+
+---
+
+# 11. Optional: rebuild the full corrected object
+
+If you want to continue working with the full multi-cell-type object with all
+corrections applied (e.g. for cross-cell-type analyses), re-run with
+`return_full_corrected_obj = TRUE`. Note this is memory-intensive as it
+duplicates the Seurat object.
+
+```{r full-object, eval=FALSE}
+results_full <- ambient_filter(
+  object                    = seu,
+  cell_type_col             = "cell_type",
+  sample_col                = "orig.ident",
+  tissue_col                = "tissue",
+  cell_types                = cell_types_to_correct,
+  correction_strength       = correction_strengths,
+  highlight_genes           = islet_ambient_genes,
+  return_full_corrected_obj = TRUE,   # <-- write back to full object
+  save_dir                  = "ambient_filter_results",
+  verbose                   = TRUE
+)
+
+# The full updated object
+seu_corrected <- results_full$updated_object
+
+# Save it
+saveRDS(seu_corrected, "seu_ambient_corrected.rds")
+```
+
+---
+
+# 12. Recommended: compare DE before and after
+
+Following the dRopt recommendation, always run differential expression on both
+the original and corrected objects and compare gene lists. In our experience,
+the gene lists are similar but the corrected version no longer includes
+cell-type-specific contamination genes (INS, TTR, GCG) as false positives.
+
+```{r de-comparison, eval=FALSE}
+# Example: pseudobulk DE on macrophages before and after correction
+# Using muscat + DESeq2 (recommended)
+library(muscat)
+library(DESeq2)
+
+# Helper to run pseudobulk DE with muscat
+run_pseudobulk_de <- function(obj, sample_col, group_col, contrast) {
+  sce <- as.SingleCellExperiment(obj)
+  sce <- prepSCE(
+    sce,
+    kid = "cell_type",   # cluster column
+    gid = group_col,     # group column (e.g. disease condition)
+    sid = sample_col,    # sample column
+    drop = TRUE
+  )
+  pb  <- aggregateData(sce, assay = "counts", fun = "sum")
+  res <- pbDS(pb, design = ~group_id, contrast = contrast, verbose = FALSE)
+  resDS(sce, res, bind = "row", frq = TRUE)
+}
+
+# Run on original macrophages
+de_original <- run_pseudobulk_de(
+  results$cell_type_results$macrophage$original,
+  sample_col = "orig.ident",
+  group_col  = "condition",  # e.g. "T1D" vs "ND"
+  contrast   = "T1D - ND"
+)
+
+# Run on corrected macrophages
+de_corrected <- run_pseudobulk_de(
+  results$cell_type_results$macrophage$corrected,
+  sample_col = "orig.ident",
+  group_col  = "condition",
+  contrast   = "T1D - ND"
+)
+
+# Compare: which top DE genes disappeared after correction?
+top_original <- head(de_original[order(de_original$p_adj.loc), "gene"], 50)
+top_corrected <- head(de_corrected[order(de_corrected$p_adj.loc), "gene"], 50)
+
+cat("Genes in original DE but NOT in corrected (likely ambient):\n")
+print(setdiff(top_original, top_corrected))
+
+cat("\nGenes in corrected DE but NOT in original (unmasked by correction):\n")
+print(setdiff(top_corrected, top_original))
+```
+
+---
+
+# 13. Session info
+
+```{r session-info}
+sessionInfo()
+```

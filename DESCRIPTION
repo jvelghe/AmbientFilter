@@ -24,6 +24,7 @@ Imports:
     SeuratObject (>= 5.0.0),
     DropletUtils (>= 1.18.0),
     Matrix,
+    reshape2,
     dplyr,
     ggplot2,
     patchwork,

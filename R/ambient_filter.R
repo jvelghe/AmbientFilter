@@ -127,22 +127,30 @@
 #'
 #' @export
 ambient_filter <- function(object,
-                           cell_type_col           = "cell_type",
-                           sample_col              = "orig.ident",
-                           tissue_col              = NULL,
-                           cell_types              = NULL,
-                           correction_strength     = 1.0,
-                           exclude_from_background = NULL,
-                           assay                   = "RNA",
-                           min_cells               = 10,
-                           features                = NULL,
-                           make_plots              = TRUE,
-                           label_difference        = 0.5,
-                           highlight_genes         = c("INS", "TTR", "GCG",
-                                                       "PRSS1", "CELA3A"),
-                           return_full_corrected_obj = FALSE,
-                           save_dir                = NULL,
-                           verbose                 = TRUE) {
+                           cell_type_col              = "cell_type",
+                           sample_col                 = "orig.ident",
+                           tissue_col                 = NULL,
+                           cell_types                 = NULL,
+                           correction_strength        = 1.0,
+                           exclude_from_background    = NULL,
+                           assay                      = "RNA",
+                           min_cells                  = 10,
+                           features                   = NULL,
+                           make_plots                 = TRUE,
+                           label_difference           = 0.5,
+                           highlight_genes            = c("INS", "TTR", "GCG",
+                                                          "PRSS1", "CELA3A"),
+                           run_consistency_analysis   = TRUE,
+                           min_sample_fraction        = 0.5,
+                           min_cell_types             = 2,
+                           export_offenders           = TRUE,
+                           dataset_name               = "my_dataset",
+                           tissue                     = "unknown",
+                           n_donors                   = NULL,
+                           platform                   = "10x_Chromium",
+                           return_full_corrected_obj  = FALSE,
+                           save_dir                   = NULL,
+                           verbose                    = TRUE) {
 
   # ── Validate inputs ────────────────────────────────────────────────────────
   .validate_seurat(object, assay)
@@ -305,16 +313,20 @@ ambient_filter <- function(object,
     background        = background,
     plots             = if (make_plots) plots else NULL,
     updated_object    = updated_object,
+    ambient_map       = NULL,   # populated below if run_consistency_analysis
     params = list(
-      cell_type_col           = cell_type_col,
-      sample_col              = sample_col,
-      tissue_col              = tissue_col,
-      cell_types              = cell_types,
-      correction_strength     = correction_strength,
-      exclude_from_background = exclude_from_background,
-      assay                   = assay,
-      min_cells               = min_cells,
-      date_run                = Sys.time()
+      cell_type_col              = cell_type_col,
+      sample_col                 = sample_col,
+      tissue_col                 = tissue_col,
+      cell_types                 = cell_types,
+      correction_strength        = correction_strength,
+      exclude_from_background    = exclude_from_background,
+      assay                      = assay,
+      min_cells                  = min_cells,
+      run_consistency_analysis   = run_consistency_analysis,
+      min_sample_fraction        = min_sample_fraction,
+      min_cell_types             = min_cell_types,
+      date_run                   = Sys.time()
     )
   )
   result_obj$summary <- summarise_correction(result_obj)
@@ -328,9 +340,63 @@ ambient_filter <- function(object,
     )
   }
 
+  # ── Step 5: Cross-sample consistency analysis (hybrid method) ─────────────
+  if (run_consistency_analysis) {
+    if (verbose) cli::cli_h1("Step 5: Cross-sample ambient consistency analysis")
+
+    consistency_save_dir <- if (!is.null(save_dir)) {
+      file.path(save_dir, "ambient_offenders")
+    } else NULL
+
+    ambient_map <- identify_consistent_ambient(
+      results             = result_obj,
+      object              = object,
+      sample_col          = sample_col,
+      tissue_col          = tissue_col,
+      cell_type_col       = cell_type_col,
+      assay               = assay,
+      lfc_threshold       = 0.3,
+      min_sample_fraction = min_sample_fraction,
+      min_cell_types      = min_cell_types,
+      min_cells           = min_cells,
+      make_plots          = make_plots,
+      save_dir            = consistency_save_dir,
+      verbose             = verbose
+    )
+    result_obj$ambient_map <- ambient_map
+
+    # Export shareable offenders table
+    if (export_offenders && !is.null(save_dir)) {
+      export_ambient_offenders(
+        ambient_map  = ambient_map,
+        dataset_name = dataset_name,
+        tissue       = tissue,
+        n_donors     = n_donors,
+        platform     = platform,
+        notes        = paste0("Generated by AmbientFilter::ambient_filter(). ",
+                              "Cell types corrected: ",
+                              paste(cell_types, collapse = ", ")),
+        save_dir     = consistency_save_dir,
+        save_excel   = TRUE
+      )
+    }
+  }
+
   if (verbose) {
-    cli::cli_h1("Done")
+    cli::cli_h1("AmbientFilter complete")
+    cli::cli_h2("Per-cell-type correction summary")
     print(result_obj$summary)
+    if (run_consistency_analysis && !is.null(result_obj$ambient_map)) {
+      n_cross <- nrow(result_obj$ambient_map$cross_cell_type)
+      cli::cli_alert_success(
+        paste0(n_cross, " cross-cell-type ambient offenders identified. ",
+               "See results$ambient_map and results$ambient_map$plots.")
+      )
+      if (n_cross > 0) {
+        cli::cli_h2("Top cross-cell-type ambient offenders")
+        print(head(result_obj$ambient_map$cross_cell_type, 10))
+      }
+    }
   }
 
   result_obj
