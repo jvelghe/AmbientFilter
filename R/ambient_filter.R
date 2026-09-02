@@ -52,6 +52,21 @@
 #' @param features Named list or NULL. Per-cell-type gene lists to
 #'   force-correct (passed to `features` in `removeAmbience`). Names should
 #'   match `cell_types`. Default `NULL`.
+#' @param protected_genes Named list or NULL. Per-cell-type gene lists to
+#'   **exclude from correction**. Genes in this list retain their original
+#'   counts regardless of ambient weight. Names should match `cell_types`,
+#'   or use `"all"` to protect genes across all cell types. Examples:
+#'   \cr\cr
+#'   Protect mitochondrial genes in macrophages only (recommended when
+#'   mitochondrial transfer between cell types is a possibility):
+#'   \cr
+#'   `protected_genes = list(Macrophages = grep("^MT-", rownames(seu), value = TRUE))`
+#'   \cr\cr
+#'   Protect MT genes across all cell types:
+#'   \cr
+#'   `protected_genes = list(all = grep("^MT-", rownames(seu), value = TRUE))`
+#'   \cr\cr
+#'   Default `NULL` (no protection — correction applied to all genes).
 #' @param make_plots Logical. Generate diagnostic plots for each cell type.
 #'   Default `TRUE`.
 #' @param label_difference Numeric. |log2FC| threshold for labelling genes in
@@ -141,6 +156,7 @@ ambient_filter <- function(object,
                            assay                      = "RNA",
                            min_cells                  = 10,
                            features                   = NULL,
+                           protected_genes            = NULL,
                            make_plots                 = TRUE,
                            label_difference           = 0.5,
                            highlight_genes            = c("INS", "TTR", "GCG",
@@ -269,6 +285,23 @@ ambient_filter <- function(object,
     ct_features <- if (!is.null(features)) features[[ct]] else NULL
 
     # Run correction
+    # Resolve protected genes for this cell type
+    ct_protected <- NULL
+    if (!is.null(protected_genes)) {
+      if ("all" %in% names(protected_genes)) {
+        ct_protected <- protected_genes[["all"]]
+      }
+      if (ct %in% names(protected_genes)) {
+        ct_protected <- unique(c(ct_protected, protected_genes[[ct]]))
+      }
+      if (!is.null(ct_protected) && length(ct_protected) > 0 && verbose) {
+        cli::cli_alert_info(
+          paste0("  Protecting ", length(ct_protected),
+                 " genes from correction in '", ct, "'.")
+        )
+      }
+    }
+
     ct_result <- correct_cell_type(
       object              = object,
       background          = background,
@@ -280,6 +313,7 @@ ambient_filter <- function(object,
       correction_strength = ct_strength,
       min_cells           = min_cells,
       features            = ct_features,
+      protected_genes     = ct_protected,
       verbose             = verbose
     )
     cell_type_results[[ct]] <- ct_result
@@ -377,6 +411,7 @@ ambient_filter <- function(object,
       auto_estimate_strength     = auto_estimate_strength,
       prior_strengths            = prior_strengths,
       prior_weight               = prior_weight,
+      protected_genes            = protected_genes,
       exclude_from_background    = exclude_from_background,
       assay                      = assay,
       min_cells                  = min_cells,

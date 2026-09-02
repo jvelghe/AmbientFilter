@@ -526,3 +526,49 @@ if (n_fail > 0) {
 }
 
 invisible(results)
+
+
+# ── BONUS: example of protected_genes usage ───────────────────────────────────
+# Uncomment to test mitochondrial gene protection in macrophages.
+# Use this when mitochondrial transfer between cell types is a concern
+# (e.g. beta-to-macrophage mitochondrial transfer).
+#
+# mt_genes <- grep("^MT-", rownames(seu_small), value = TRUE)
+# cat(paste0("\n  MT genes in object: ", paste(mt_genes, collapse=", "), "\n"))
+#
+# results_protected <- ambient_filter(
+#   object                    = seu_small,
+#   cell_type_col             = CELL_TYPE_COL,
+#   sample_col                = SAMPLE_COL,
+#   tissue_col                = TISSUE_COL,
+#   cell_types                = CELL_TYPES_TO_CORRECT,
+#   auto_estimate_strength    = TRUE,
+#   prior_strengths           = PRIOR_STRENGTHS,
+#   prior_weight              = 0.3,
+#   exclude_from_background   = EXCLUDE_FROM_BG,
+#   # ── Protect MT genes in macrophages from correction ──────────────────────
+#   # MT genes may reflect genuine beta-to-macrophage mitochondrial transfer.
+#   # Using "all" protects them across every cell type.
+#   # Use a named list to protect only in specific cell types:
+#   protected_genes = list(
+#     Macrophages = mt_genes   # protect only in macrophages
+#     # all = mt_genes         # protect across all cell types
+#   ),
+#   save_dir = NULL,
+#   verbose  = TRUE
+# )
+#
+# # Compare MT gene expression before/after in macrophages with protection
+# mt_check <- sapply(mt_genes, function(g) {
+#   if (!g %in% rownames(results_protected$cell_type_results$Macrophages$original)) {
+#     return(c(orig = NA, corr_unprotected = NA, corr_protected = NA))
+#   }
+#   orig <- mean(as.numeric(LayerData(
+#     results_protected$cell_type_results$Macrophages$original, layer="counts")[g,]))
+#   prot <- mean(as.numeric(LayerData(
+#     results_protected$cell_type_results$Macrophages$corrected, layer="counts")[g,]))
+#   unprot <- mean(as.numeric(LayerData(
+#     results$cell_type_results$Macrophages$corrected, layer="counts")[g,]))
+#   c(orig = orig, corr_unprotected = unprot, corr_protected = prot)
+# })
+# print(t(mt_check))

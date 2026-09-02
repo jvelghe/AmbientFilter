@@ -34,6 +34,15 @@
 #' @param features Character vector or NULL. Specific genes to force-correct
 #'   (passed to `features` in `removeAmbience`). Use only when known
 #'   non-expressed genes are not being removed automatically. Default `NULL`.
+#' @param protected_genes Character vector or NULL. Genes to **exclude from
+#'   correction** regardless of their ambient weight. These genes will retain
+#'   their original counts in the corrected output. Use this for genes that
+#'   may be biologically present in a cell type through a non-ambient route
+#'   that you want to preserve. For example, mitochondrial genes in macrophages
+#'   may reflect genuine beta-to-macrophage mitochondrial transfer (not just
+#'   ambient contamination), and should be protected:
+#'   `protected_genes = grep("^MT-", rownames(seu), value = TRUE)`.
+#'   Default `NULL` (no protection — all genes eligible for correction).
 #' @param verbose Logical. Default `TRUE`.
 #'
 #' @return A list with elements:
@@ -84,6 +93,7 @@ correct_cell_type <- function(object,
                               correction_strength = 1.0,
                               min_cells           = 10,
                               features            = NULL,
+                              protected_genes     = NULL,
                               verbose             = TRUE) {
 
   .validate_seurat(object, assay)
@@ -199,6 +209,19 @@ correct_cell_type <- function(object,
     if (!is.null(corrected_sample)) {
       # Write corrected counts back into the full corrected matrix
       corrected_counts[shared_genes, cell_idx] <- corrected_sample
+
+      # ── Restore protected genes to original counts ─────────────────────────
+      # Protected genes (e.g. mitochondrial genes in macrophages that may
+      # reflect genuine cell-to-cell transfer rather than ambient noise)
+      # are written back from the original uncorrected counts.
+      if (!is.null(protected_genes) && length(protected_genes) > 0) {
+        genes_to_restore <- intersect(protected_genes, shared_genes)
+        if (length(genes_to_restore) > 0) {
+          corrected_counts[genes_to_restore, cell_idx] <-
+            sample_counts[genes_to_restore, , drop = FALSE]
+        }
+      }
+
       samples_used <- c(samples_used, s)
     } else {
       samples_skipped <- c(samples_skipped, s)
@@ -221,6 +244,7 @@ correct_cell_type <- function(object,
                                              assay, cell_label)
 
   # ── Summarise changed genes ────────────────────────────────────────────────
+  # Note: protected genes will show log2FC = 0 (unchanged by design)
   orig_means <- Matrix::rowMeans(
     .get_counts(original_subset, assay)
   )

@@ -123,6 +123,7 @@ correct_cell_type_vae <- function(object,
                                   learning_rate      = 1e-3,
                                   lambda_ambient     = 1.0,
                                   lambda_bio         = 0.5,
+                                  protected_genes    = NULL,
                                   min_cells          = 10,
                                   use_gpu            = TRUE,
                                   envname            = "ambientfilter",
@@ -211,6 +212,23 @@ correct_cell_type_vae <- function(object,
   corrected_counts <- t(corrected_counts_t)  # back to genes x cells
   rownames(corrected_counts) <- rownames(counts_mat)
   colnames(corrected_counts) <- colnames(counts_mat)
+
+  # ── Restore protected genes to original counts ────────────────────────────
+  # Protected genes (e.g. MT genes that may reflect genuine mitochondrial
+  # transfer) are written back from original uncorrected counts.
+  if (!is.null(protected_genes) && length(protected_genes) > 0) {
+    genes_to_restore <- intersect(protected_genes, rownames(corrected_counts))
+    if (length(genes_to_restore) > 0) {
+      corrected_counts[genes_to_restore, ] <- counts_mat[genes_to_restore, ]
+      if (verbose) {
+        cli::cli_alert_info(
+          paste0("  Restored ", length(genes_to_restore),
+                 " protected genes to original counts.")
+        )
+      }
+    }
+  }
+
   corrected_counts <- Matrix::Matrix(corrected_counts, sparse = TRUE)
 
   # ── Build output objects ──────────────────────────────────────────────────
@@ -300,6 +318,7 @@ ambient_filter_vae <- function(object,
                                learning_rate       = 1e-3,
                                lambda_ambient      = 1.0,
                                lambda_bio          = 0.5,
+                               protected_genes     = NULL,
                                min_cells           = 10,
                                use_gpu             = TRUE,
                                envname             = "ambientfilter",
@@ -354,6 +373,17 @@ ambient_filter_vae <- function(object,
       strength_estimates$gene_weights[[ct]]
     } else NULL
 
+    # Resolve protected genes for this cell type
+    ct_protected_vae <- NULL
+    if (!is.null(protected_genes)) {
+      if ("all" %in% names(protected_genes)) {
+        ct_protected_vae <- protected_genes[["all"]]
+      }
+      if (ct %in% names(protected_genes)) {
+        ct_protected_vae <- unique(c(ct_protected_vae, protected_genes[[ct]]))
+      }
+    }
+
     ct_result <- correct_cell_type_vae(
       object              = object,
       background          = background,
@@ -363,6 +393,7 @@ ambient_filter_vae <- function(object,
       tissue_col          = tissue_col,
       assay               = assay,
       gene_weights        = gene_wts,
+      protected_genes     = ct_protected_vae,
       latent_dim_bio      = latent_dim_bio,
       latent_dim_ambient  = latent_dim_ambient,
       hidden_dims         = hidden_dims,
