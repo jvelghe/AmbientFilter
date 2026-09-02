@@ -266,37 +266,104 @@ islet_ambient_genes <- c("INS", "TTR", "GCG", "PRSS1", "CELA3A",
 
 ```{r run-ambient-filter}
 # Run the full hybrid pipeline:
-#   Step 1: per-sample background estimation
-#   Step 2: per-cell-type removeAmbience() correction
-#   Step 3: cross-sample consistency analysis (the pooled hybrid layer)
-#   Step 4: export shareable ambient offenders table
+#   Step 1:   per-sample background estimation
+#   Step 1.5: data-driven correction strength estimation (NEW — replaces manual values)
+#   Step 2:   per-cell-type removeAmbience() correction
+#   Step 3:   cross-sample consistency analysis (the pooled hybrid layer)
+#   Step 4:   export shareable ambient offenders table
+
 results <- ambient_filter(
   object                    = seu,
   cell_type_col             = "cell_type",
   sample_col                = "orig.ident",
   tissue_col                = "tissue",          # NULL if single tissue
   cell_types                = cell_types_to_correct,
-  correction_strength       = correction_strengths,
+
+  # ── Data-driven correction strength (recommended) ─────────────────────────
+  # auto_estimate_strength = TRUE learns correction strengths from cross-sample
+  # ambient correlations — no need to manually set correction_strength.
+  # Macrophages will automatically receive conservative correction because their
+  # genuine marker genes are uncorrelated with the ambient background.
+  auto_estimate_strength    = TRUE,
+
+  # Optional: blend data-driven estimate with biological prior knowledge.
+  # prior_weight = 0 means fully data-driven.
+  # prior_weight = 1 means use prior_strengths exactly (same as manual).
+  prior_strengths           = c(macrophage = 0.5),  # biological prior
+  prior_weight              = 0.3,    # 30% prior, 70% data-driven
+
+  # Alternatively: supply correction_strength manually and set
+  # auto_estimate_strength = FALSE to use the old approach:
+  # correction_strength = correction_strengths,
+  # auto_estimate_strength = FALSE,
+
   exclude_from_background   = NULL,
   assay                     = "RNA",
   min_cells                 = 10,
+  top_genes_pct             = 0.3,    # use top 30% expressed genes for correlation
+  min_samples_for_estimation = 3,     # min samples needed for reliable estimate
   make_plots                = TRUE,
   label_difference          = 0.5,
   highlight_genes           = islet_ambient_genes,
+
   # ── Hybrid method: cross-sample consistency analysis ──────────────────────
-  run_consistency_analysis  = TRUE,   # runs identify_consistent_ambient() automatically
-  min_sample_fraction       = 0.5,    # gene must be corrected in >= 50% of samples
-  min_cell_types            = 2,      # gene must be ambient in >= 2 cell types
+  run_consistency_analysis  = TRUE,
+  min_sample_fraction       = 0.5,
+  min_cell_types            = 2,
+
   # ── Shareable ambient offenders export ────────────────────────────────────
-  export_offenders          = TRUE,   # saves ambient_offenders.csv/.rds/.xlsx
+  export_offenders          = TRUE,
   dataset_name              = "HPAP_islet_atlas_2026",
   tissue                    = "human_pancreatic_islet",
-  n_donors                  = 87,     # update to your actual donor count
+  n_donors                  = 87,
   platform                  = "10x_Chromium_v3",
-  return_full_corrected_obj = FALSE,  # set TRUE if you want the full updated object
+  return_full_corrected_obj = FALSE,
   save_dir                  = "ambient_filter_results",
   verbose                   = TRUE
 )
+```
+
+---
+
+# 6b. Inspect data-driven correction strength estimates
+
+Before reviewing correction results, check what strengths the model estimated.
+This replaces your manual correction_strength guesses and is derived entirely
+from your data.
+
+```{r strength-estimates}
+# Summary: what correction strength was estimated per cell type?
+results$strength_estimates$summary
+```
+
+```{r strength-bar, fig.height=5}
+# Bar chart: estimated correction strength per cell type
+# Green = conservative (cell type has genuine expression independent of ambient)
+# Red = aggressive (cell type expression tracks ambient background closely)
+# Macrophages should automatically cluster toward the conservative end
+results$strength_estimates$plots$strength_bar
+```
+
+```{r strength-violin, fig.height=5}
+# Per-sample correlation violin: shows how consistent the ambient correlation
+# is across donors — high variance = noisy estimate, consider providing a prior
+results$strength_estimates$plots$correlation_violin
+```
+
+```{r strength-scatter, fig.height=5}
+# Correlation vs final strength — shows effect of prior blending
+# Points on the diagonal = fully data-driven
+# Points off diagonal = pulled toward prior
+results$strength_estimates$plots$correlation_vs_strength
+```
+
+```{r gene-weights}
+# Per-gene ambient weights for macrophages
+# High weight (near 1) = gene is consistently ambient across donors
+# Low weight (near 0) = gene is genuinely expressed in macrophages
+mac_weights <- results$strength_estimates$gene_weights$macrophage
+# Top ambient genes in macrophages according to the model
+head(sort(mac_weights, decreasing = TRUE), 20)
 ```
 
 ---

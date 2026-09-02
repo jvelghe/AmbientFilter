@@ -2,6 +2,7 @@
 
 export(ambient_filter)
 export(estimate_background)
+export(estimate_correction_strength)
 export(correct_cell_type)
 export(plot_correction_diagnostics)
 export(summarise_correction)

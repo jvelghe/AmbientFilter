@@ -131,7 +131,12 @@ ambient_filter <- function(object,
                            sample_col                 = "orig.ident",
                            tissue_col                 = NULL,
                            cell_types                 = NULL,
-                           correction_strength        = 1.0,
+                           correction_strength        = NULL,
+                           auto_estimate_strength     = TRUE,
+                           prior_strengths            = NULL,
+                           prior_weight               = 0.3,
+                           top_genes_pct              = 0.3,
+                           min_samples_for_estimation = 3,
                            exclude_from_background    = NULL,
                            assay                      = "RNA",
                            min_cells                  = 10,
@@ -200,6 +205,54 @@ ambient_filter <- function(object,
     cell_type_col      = cell_type_col,
     verbose            = verbose
   )
+
+  # ── Step 1.5: Estimate correction strength (if auto) ────────────────────
+  # If correction_strength is NULL or auto_estimate_strength = TRUE,
+  # learn correction strengths from the data using cross-sample
+  # ambient correlation analysis. Manual values can still be supplied
+  # via prior_strengths and blended via prior_weight.
+  strength_estimates <- NULL
+
+  if (auto_estimate_strength || is.null(correction_strength)) {
+    if (verbose) {
+      cli::cli_h2("Step 1.5: Estimating data-driven correction strengths")
+      cli::cli_alert_info(
+        paste0("Learning correction strengths from cross-sample ambient ",
+               "correlations. Supply prior_strengths to blend with biological ",
+               "knowledge (e.g. macrophage = 0.5).")
+      )
+    }
+    strength_estimates <- estimate_correction_strength(
+      object              = object,
+      background          = background,
+      cell_type_col       = cell_type_col,
+      sample_col          = sample_col,
+      tissue_col          = tissue_col,
+      assay               = assay,
+      cell_types          = cell_types,
+      min_cells           = min_cells,
+      min_samples         = min_samples_for_estimation,
+      top_genes_pct       = top_genes_pct,
+      compute_gene_weights = TRUE,
+      prior_strengths     = prior_strengths,
+      prior_weight        = prior_weight,
+      make_plots          = make_plots,
+      verbose             = verbose
+    )
+    # Use estimated strengths, overriding any manually supplied value
+    correction_strength <- strength_estimates$correction_strength
+
+    if (verbose) {
+      cli::cli_alert_success("Correction strengths estimated from data.")
+    }
+  } else {
+    if (verbose) {
+      cli::cli_alert_info(
+        paste0("Using manually supplied correction_strength. ",
+               "Set auto_estimate_strength = TRUE to learn from data instead.")
+      )
+    }
+  }
 
   # ── Step 2: Correct each cell type ────────────────────────────────────────
   cell_type_results <- vector("list", length(cell_types))
@@ -309,17 +362,21 @@ ambient_filter <- function(object,
 
   # ── Step 4: Build summary ─────────────────────────────────────────────────
   result_obj <- list(
-    cell_type_results = cell_type_results,
-    background        = background,
-    plots             = if (make_plots) plots else NULL,
-    updated_object    = updated_object,
-    ambient_map       = NULL,   # populated below if run_consistency_analysis
+    cell_type_results  = cell_type_results,
+    background         = background,
+    strength_estimates = strength_estimates,
+    plots              = if (make_plots) plots else NULL,
+    updated_object     = updated_object,
+    ambient_map        = NULL,   # populated below if run_consistency_analysis
     params = list(
       cell_type_col              = cell_type_col,
       sample_col                 = sample_col,
       tissue_col                 = tissue_col,
       cell_types                 = cell_types,
       correction_strength        = correction_strength,
+      auto_estimate_strength     = auto_estimate_strength,
+      prior_strengths            = prior_strengths,
+      prior_weight               = prior_weight,
       exclude_from_background    = exclude_from_background,
       assay                      = assay,
       min_cells                  = min_cells,
