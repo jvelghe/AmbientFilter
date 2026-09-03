@@ -181,6 +181,7 @@ identify_consistent_ambient <- function(results,
       orig_counts <- .get_counts(orig, assay)[, s_cells, drop = FALSE]
       corr_counts <- .get_counts(corr, assay)[, s_cells, drop = FALSE]
 
+      # Ensure dense for rowMeans (handles both sparse and dense)
       orig_means <- Matrix::rowMeans(orig_counts)
       corr_means <- Matrix::rowMeans(corr_counts)
 

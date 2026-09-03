@@ -125,6 +125,25 @@ correct_cell_type <- function(object,
   samples_used    <- character(0)
   samples_skipped <- character(0)
 
+  # ── Debug: check background key alignment ─────────────────────────────────
+  if (verbose) {
+    bg_keys_missing <- setdiff(samples_all, names(background))
+    if (length(bg_keys_missing) > 0) {
+      rlang::warn(paste0(
+        "correct_cell_type('", cell_label, "'): ",
+        length(bg_keys_missing), " sample key(s) not found in background.
+",
+        "  Keys in cell type subset: ", paste(head(samples_all, 5), collapse=", "), "
+",
+        "  Keys in background:       ", paste(head(names(background), 5), collapse=", "), "
+",
+        "  Missing:                  ", paste(bg_keys_missing, collapse=", "), "
+",
+        "  Check that tissue_col and sample_col match what was used in estimate_background()."
+      ))
+    }
+  }
+
   # Corrected counts matrix — start as copy, update per sample
   corrected_counts <- counts_sub
 

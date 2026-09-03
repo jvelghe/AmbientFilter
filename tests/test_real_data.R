@@ -304,24 +304,24 @@ run_test("Same number of cells pre/post correction", {
   ncol(mac_result$original) == ncol(mac_result$corrected)
 })
 run_test("INS reduced in macrophages after correction", {
-  orig_ins <- mean(as.numeric(
-    SeuratObject::LayerData(mac_result$original,  layer = "counts")["INS", ]
-  ))
-  corr_ins <- mean(as.numeric(
-    SeuratObject::LayerData(mac_result$corrected, layer = "counts")["INS", ]
-  ))
+  orig_ins <- mean(as.numeric(as.matrix(
+    SeuratObject::LayerData(mac_result$original,  layer = "counts")["INS", , drop=FALSE]
+  )))
+  corr_ins <- mean(as.numeric(as.matrix(
+    SeuratObject::LayerData(mac_result$corrected, layer = "counts")["INS", , drop=FALSE]
+  )))
   cat(paste0("\n    INS: ", round(orig_ins, 3), " → ", round(corr_ins, 3),
              " (", round((orig_ins - corr_ins) / (orig_ins + 0.001) * 100, 1),
              "% reduction)\n"))
   corr_ins <= orig_ins
 })
 run_test("TTR reduced in macrophages after correction", {
-  orig <- mean(as.numeric(
-    SeuratObject::LayerData(mac_result$original,  layer = "counts")["TTR", ]
-  ))
-  corr <- mean(as.numeric(
-    SeuratObject::LayerData(mac_result$corrected, layer = "counts")["TTR", ]
-  ))
+  orig <- mean(as.numeric(as.matrix(
+    SeuratObject::LayerData(mac_result$original,  layer = "counts")["TTR", , drop=FALSE]
+  )))
+  corr <- mean(as.numeric(as.matrix(
+    SeuratObject::LayerData(mac_result$corrected, layer = "counts")["TTR", , drop=FALSE]
+  )))
   cat(paste0("    TTR: ", round(orig, 3), " → ", round(corr, 3),
              " (", round((orig - corr) / (orig + 0.001) * 100, 1),
              "% reduction)\n"))
@@ -383,10 +383,10 @@ run_test("INS reduced across all corrected immune cell types", {
                             CELL_TYPES_TO_CORRECT)
   all(sapply(immune_types, function(ct) {
     if (!ct %in% names(results$cell_type_results)) return(TRUE)
-    orig <- mean(as.numeric(SeuratObject::LayerData(
-      results$cell_type_results[[ct]]$original,  layer = "counts")["INS", ]))
-    corr <- mean(as.numeric(SeuratObject::LayerData(
-      results$cell_type_results[[ct]]$corrected, layer = "counts")["INS", ]))
+    orig <- mean(as.numeric(as.matrix(SeuratObject::LayerData(
+      results$cell_type_results[[ct]]$original,  layer = "counts")["INS", , drop=FALSE])))
+    corr <- mean(as.numeric(as.matrix(SeuratObject::LayerData(
+      results$cell_type_results[[ct]]$corrected, layer = "counts")["INS", , drop=FALSE])))
     corr <= orig
   }))
 })
@@ -396,12 +396,12 @@ for (ct in CELL_TYPES_TO_CORRECT) {
   if (!ct %in% names(results$cell_type_results)) next
   r <- results$cell_type_results[[ct]]
   if (!"INS" %in% rownames(r$original)) next
-  orig <- mean(as.numeric(
-    SeuratObject::LayerData(r$original,  layer = "counts")["INS", ]
-  ))
-  corr <- mean(as.numeric(
-    SeuratObject::LayerData(r$corrected, layer = "counts")["INS", ]
-  ))
+  orig <- mean(as.numeric(as.matrix(
+    SeuratObject::LayerData(r$original,  layer = "counts")["INS", , drop=FALSE]
+  )))
+  corr <- mean(as.numeric(as.matrix(
+    SeuratObject::LayerData(r$corrected, layer = "counts")["INS", , drop=FALSE]
+  )))
   pct_red <- round((orig - corr) / (orig + 0.001) * 100, 1)
   str_val <- round(results$strength_estimates$correction_strength[ct], 3)
   cat(sprintf("    %-25s  INS: %.3f → %.3f (%5.1f%% reduction)  strength=%.3f\n",

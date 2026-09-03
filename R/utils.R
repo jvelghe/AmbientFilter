@@ -49,6 +49,15 @@
   SeuratObject::LayerData(object, assay = assay, layer = "counts")
 }
 
+#' Safely extract a single gene's counts as a plain numeric vector
+#' Handles both sparse (dgCMatrix) and dense matrix returns from LayerData
+#' @keywords internal
+.get_gene_counts <- function(object, assay, gene) {
+  mat <- SeuratObject::LayerData(object, assay = assay, layer = "counts")
+  if (!gene %in% rownames(mat)) return(rep(0, ncol(mat)))
+  as.numeric(as.matrix(mat[gene, , drop = FALSE]))
+}
+
 #' @keywords internal
 .set_counts <- function(object, assay, counts_mat) {
   SeuratObject::LayerData(object, assay = assay, layer = "counts") <- counts_mat

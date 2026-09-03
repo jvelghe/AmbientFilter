@@ -473,11 +473,11 @@ ins_df <- do.call(rbind, lapply(names(results$cell_type_results), function(ct) {
   if (!"INS" %in% rownames(r$original)) return(NULL)
   rbind(
     data.frame(cell_type  = ct, state = "Before",
-               expression = as.numeric(SeuratObject::LayerData(
-                 r$original, layer = "counts")["INS", ])),
+               expression = as.numeric(as.matrix(SeuratObject::LayerData(
+                 r$original, layer = "counts")["INS", , drop=FALSE]))),
     data.frame(cell_type  = ct, state = "After",
-               expression = as.numeric(SeuratObject::LayerData(
-                 r$corrected, layer = "counts")["INS", ]))
+               expression = as.numeric(as.matrix(SeuratObject::LayerData(
+                 r$corrected, layer = "counts")["INS", , drop=FALSE])))
   )
 }))
 ins_df$state <- factor(ins_df$state, levels = c("Before", "After"))
