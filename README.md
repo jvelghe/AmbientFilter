@@ -116,6 +116,42 @@ for the VAE method.
 
 ---
 
+## Protected genes — preserving biologically meaningful signal
+
+Some genes may be biologically present in a cell type through a non-ambient
+route and should be **excluded from correction**. AmbientFilter provides a
+`protected_genes` parameter for this purpose — genes in this list retain their
+original counts in the corrected output regardless of ambient weight.
+
+The clearest case in islet biology is **beta-to-macrophage mitochondrial
+transfer**: mitochondrial genes (MT-CO1, MT-ND1, MT-ATP6, etc.) in macrophages
+could reflect genuine foreign mitochondria rather than ambient contamination.
+
+```r
+mt_genes <- grep("^MT-", rownames(seu), value = TRUE)
+
+# Protect MT genes in macrophages only
+results <- ambient_filter(
+  ...,
+  protected_genes = list(Macrophages = mt_genes)
+)
+
+# Protect MT genes across all cell types
+results <- ambient_filter(
+  ...,
+  protected_genes = list(all = mt_genes)
+)
+
+# Default NULL = no protection — correction applied to all genes
+results <- ambient_filter(..., protected_genes = NULL)
+```
+
+`protected_genes` works identically in `ambient_filter_vae()`. The `all` key
+protects genes across every cell type; named keys protect genes in specific
+cell types only.
+
+---
+
 ## VAE method
 
 `ambient_filter_vae()` provides a more sophisticated correction using a
@@ -230,6 +266,12 @@ results <- ambient_filter(
   prior_strengths           = c(macrophage = 0.5),
   prior_weight              = 0.3,
   highlight_genes           = c("INS", "TTR", "GCG", "PRSS1"),
+  # ── Protected genes (optional) ──────────────────────────────────────────
+  # NULL = no protection (default). Set to protect genes that may be
+  # biologically present via non-ambient routes (e.g. MT genes in macrophages
+  # if mitochondrial transfer between cell types is a concern).
+  protected_genes           = NULL,
+  # protected_genes = list(Macrophages = grep("^MT-", rownames(seu), value=TRUE)),
   run_consistency_analysis  = TRUE,          # cross-sample ambient offenders
   export_offenders          = TRUE,          # save shareable offenders table
   dataset_name              = "my_islet_atlas",
