@@ -29,17 +29,25 @@ ASSAY         <- "RNA"
 
 # Cell types to correct (skip endocrine — they ARE the ambient source)
 CELL_TYPES_TO_CORRECT <- c(
+  # Immune
   "Macrophages",
   "Lymphocytes",
   "Mast",
+  "B_Cells",
+  # Stromal / vascular
   "Fibroblasts",
   "Endothelial",
-  "Schwann",
   "Pericytes",
   "Activated_Stellate",
   "Quiescent_Stellate",
+  "Schwann",
+  # Exocrine — confirmed ambient INS/GCG signal present in subclusters
   "Ductal",
-  "B_Cells"
+  "Acinar",
+  # NIBI-axis neural populations — physically adjacent to beta cells
+  # Conservative correction applied via prior_strengths below
+  "Neuronal",
+  "Neuroendo"
 )
 
 # Cells to skip for background estimation (the ambient source)
@@ -49,7 +57,11 @@ EXCLUDE_FROM_BG <- c("Beta", "Alpha", "Alpha-Beta", "Delta",
 # Per-cell-type prior strengths (biological knowledge)
 # Macrophages: conservative — they are genuinely nibbly
 # Everything else: data-driven will handle it
-PRIOR_STRENGTHS <- c(Macrophages = 0.5)
+PRIOR_STRENGTHS <- c(
+  Macrophages = 0.5,   # conservative — efferocytosis/trogocytosis
+  Neuronal    = 0.4,   # NIBI-axis — physically adjacent to beta cells
+  Neuroendo   = 0.4    # NIBI-axis — physically adjacent to beta cells
+)
 
 # Downsample settings
 N_CELLS_PER_TYPE <- 100   # cells per cell type for testing

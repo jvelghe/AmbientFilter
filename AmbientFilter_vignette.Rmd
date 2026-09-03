@@ -166,19 +166,25 @@ ASSAY         <- "RNA"         # assay containing raw counts
 # Exclude endocrine types — they ARE the ambient source and correcting them
 # removes real signal.
 cell_types_to_correct <- c(
+  # Immune
   "Macrophages",
   "Lymphocytes",
   "Mast",
-  "Ductal",
+  "B_Cells",
+  # Stromal / vascular
+  "Fibroblasts",
+  "Endothelial",
+  "Pericytes",
   "Activated_Stellate",
   "Quiescent_Stellate",
-  "Endothelial",
-  "Fibroblasts",
-  "Pericytes",
   "Schwann",
-  "B_Cells"
-  # Consider adding: "Acinar" (exocrine, will have ambient INS/TTR)
-  # Consider adding: "Neuronal", "Neuroendo" (NIBI-axis; use conservative prior)
+  # Exocrine — confirmed ambient INS/GCG signal present in subclusters
+  "Ductal",
+  "Acinar",
+  # NIBI-axis neural populations — physically adjacent to beta cells
+  # Conservative correction applied via prior_strengths below
+  "Neuronal",
+  "Neuroendo"
 )
 
 # ── Cell types to exclude from background estimation ─────────────────────────
@@ -190,6 +196,12 @@ exclude_from_background <- c(
 # ── Ambient genes to highlight in plots ───────────────────────────────────────
 islet_ambient_genes <- c("INS", "TTR", "GCG", "PRSS1", "CELA3A",
                           "CLPS", "PNLIP", "REG1A")
+
+# ── Biological priors for correction strength ─────────────────────────────────
+# These are blended with the data-driven estimate (prior_weight = 0.3 below).
+# Macrophages: conservative — legitimately internalise ambient RNA
+# Neuronal/Neuroendo: conservative — NIBI-axis cells sit adjacent to beta cells
+#   and may have some genuine low-level endocrine gene proximity signal
 
 # ── Protected genes (optional — default NULL = correction applied to all genes)
 # Genes excluded from correction; original counts are preserved in the output.
@@ -550,7 +562,11 @@ results_protected <- ambient_filter(
   tissue_col                = TISSUE_COL,
   cell_types                = cell_types_to_correct,
   auto_estimate_strength    = TRUE,
-  prior_strengths           = c(Macrophages = 0.5),
+  prior_strengths           = c(
+    Macrophages = 0.5,   # conservative — efferocytosis/trogocytosis
+    Neuronal    = 0.4,   # NIBI-axis — adjacent to beta cells
+    Neuroendo   = 0.4    # NIBI-axis — adjacent to beta cells
+  ),
   prior_weight              = 0.3,
   exclude_from_background   = exclude_from_background,
   protected_genes           = list(Macrophages = mt_genes),
@@ -611,7 +627,11 @@ results_v2 <- ambient_filter(
   tissue_col                = TISSUE_COL,
   cell_types                = cell_types_to_correct,
   auto_estimate_strength    = TRUE,
-  prior_strengths           = c(Macrophages = 0.5),
+  prior_strengths           = c(
+    Macrophages = 0.5,   # conservative — efferocytosis/trogocytosis
+    Neuronal    = 0.4,   # NIBI-axis — adjacent to beta cells
+    Neuroendo   = 0.4    # NIBI-axis — adjacent to beta cells
+  ),
   prior_weight              = 0.3,
   exclude_from_background   = exclude_from_background,
   protected_genes           = protected_genes,
@@ -701,7 +721,11 @@ results_full <- ambient_filter(
   tissue_col                = TISSUE_COL,
   cell_types                = cell_types_to_correct,
   auto_estimate_strength    = TRUE,
-  prior_strengths           = c(Macrophages = 0.5),
+  prior_strengths           = c(
+    Macrophages = 0.5,   # conservative — efferocytosis/trogocytosis
+    Neuronal    = 0.4,   # NIBI-axis — adjacent to beta cells
+    Neuroendo   = 0.4    # NIBI-axis — adjacent to beta cells
+  ),
   prior_weight              = 0.3,
   exclude_from_background   = exclude_from_background,
   protected_genes           = protected_genes,
